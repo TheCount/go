@@ -2328,14 +2328,12 @@ func isLetter(ch rune) bool {
 	return 'a' <= ch && ch <= 'z' || 'A' <= ch && ch <= 'Z' || ch == '_' || ch >= utf8.RuneSelf && unicode.IsLetter(ch)
 }
 
-// isValidFieldName checks if a string is a valid (struct) field name or not.
-//
-// According to the language spec, a field name should be an identifier.
+// isIdentifier checks if a string is a valid identifier or not.
 //
 // identifier = letter { letter | unicode_digit } .
 // letter = unicode_letter | "_" .
-func isValidFieldName(fieldName string) bool {
-	for i, c := range fieldName {
+func isIdentifier(id string) bool {
+	for i, c := range id {
 		if i == 0 && !isLetter(c) {
 			return false
 		}
@@ -2345,7 +2343,14 @@ func isValidFieldName(fieldName string) bool {
 		}
 	}
 
-	return len(fieldName) > 0
+	return len(id) > 0
+}
+
+// isValidFieldName checks if a string is a valid (struct) field name or not.
+//
+// According to the language spec, a field name should be an identifier.
+func isValidFieldName(fieldName string) bool {
+	return isIdentifier(fieldName)
 }
 
 // StructOf returns the struct type containing fields.
