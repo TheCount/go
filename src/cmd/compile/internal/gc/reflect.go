@@ -812,6 +812,7 @@ const (
 	tflagExtraStar     = 1 << 1
 	tflagNamed         = 1 << 2
 	tflagRegularMemory = 1 << 3
+	tflagIncomplete    = 1 << 4
 )
 
 var (

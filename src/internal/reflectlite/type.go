@@ -142,6 +142,10 @@ const (
 	// tflagRegularMemory means that equal and hash functions can treat
 	// this type as a single region of t.size bytes.
 	tflagRegularMemory tflag = 1 << 3
+
+	// tflagIncomplete means this type was created by Named and Bind has not
+	// been called on it yet.
+	tflagIncomplete tflag = 1 << 4
 )
 
 // rtype is the common implementation of most values.

@@ -5650,6 +5650,573 @@ func TestMapOfGCValues(t *testing.T) {
 	}
 }
 
+func TestBind(t *testing.T) {
+	// invalid type name "1nvalid"
+	shouldPanic("invalid type name", func() {
+		Named("1nvalid")
+	})
+
+	// invalid type name "+"
+	shouldPanic("invalid type name", func() {
+		Named("+")
+	})
+
+	// no type name
+	shouldPanic("invalid type name", func() {
+		Named("")
+	})
+
+	// verify creation of incomplete type with valid type name
+	valid := Named("valid")
+	if valid == nil {
+		t.Error("valid incomplete type is nil")
+	}
+
+	// bind simple types
+	simple := []struct {
+		Name       string
+		Underlying Type
+	}{
+		{"sBool", TypeOf(true)},
+		{"sInt", TypeOf(int(0))},
+		{"sInt8", TypeOf(int8(0))},
+		{"sInt16", TypeOf(int16(0))},
+		{"sInt32", TypeOf(int32(0))},
+		{"sInt64", TypeOf(int64(0))},
+		{"sUint", TypeOf(uint(0))},
+		{"sUint8", TypeOf(uint8(0))},
+		{"sUint16", TypeOf(uint16(0))},
+		{"sUint32", TypeOf(uint32(0))},
+		{"sUint64", TypeOf(uint64(0))},
+		{"sUintptr", TypeOf(uintptr(0))},
+		{"sFloat32", TypeOf(float32(0))},
+		{"sFloat64", TypeOf(float64(0))},
+		{"sComplex64", TypeOf(complex64(0))},
+		{"sComplex128", TypeOf(complex128(0))},
+		{"sString", TypeOf("")},
+		{"sUnsafePointer", TypeOf(unsafe.Pointer(uintptr(0)))},
+	}
+	for _, testcase := range simple {
+		incomplete := Named(testcase.Name)
+		complete := Bind(incomplete, testcase.Underlying)
+		if complete == testcase.Underlying {
+			t.Errorf("simple type %s equal to underlying type", testcase.Name)
+		}
+		if complete.Name() != testcase.Name {
+			t.Errorf("simple type name = %s, want %s", complete.Name(), testcase.Name)
+		}
+		if complete.Kind() != testcase.Underlying.Kind() {
+			t.Errorf("simple type kind = %s, want %s", complete.Kind(),
+				testcase.Underlying.Kind())
+		}
+	}
+
+	// invalid array bind
+	incomplete := Named("incompleteArray")
+	shouldPanic("incomplete element type", func() {
+		ArrayOf(42, incomplete)
+	})
+
+	// nonrecursive array bind
+	incomplete = Named("nonrecursiveArray")
+	underlying := ArrayOf(42, TypeOf(0))
+	complete := Bind(incomplete, underlying)
+	if complete == underlying {
+		t.Error("nonrecursiveArray complete = underlying")
+	}
+	if complete.Name() != "nonrecursiveArray" {
+		t.Errorf("bound array name = %s, want nonrecursiveArray", complete.Name())
+	}
+	if complete.Kind() != Array {
+		t.Errorf("bound array kind = %s", complete.Kind())
+	}
+	if complete.Elem() != TypeOf(0) {
+		t.Errorf("bound array element type = %s, want %s",
+			complete.Elem(), TypeOf(0))
+	}
+	if complete.Len() != 42 {
+		t.Errorf("bound array len = %d, want 42", complete.Len())
+	}
+
+	// nonrecursive chan bind
+	incomplete = Named("nonrecursiveChan")
+	underlying = ChanOf(BothDir, TypeOf(0))
+	complete = Bind(incomplete, underlying)
+	if complete == underlying {
+		t.Error("nonrecursiveChan complete = underlying")
+	}
+	if complete.Name() != "nonrecursiveChan" {
+		t.Errorf("bound chan name = %s, want nonrecursiveChan", complete.Name())
+	}
+	if complete.Kind() != Chan {
+		t.Errorf("bound chan kind = %s", complete.Kind())
+	}
+	if complete.Elem() != TypeOf(0) {
+		t.Errorf("bound chan element type = %s, want %s",
+			complete.Elem(), TypeOf(0))
+	}
+	if complete.ChanDir() != BothDir {
+		t.Errorf("bound chan dir = %s, want BothDir", complete.ChanDir())
+	}
+
+	// nonrecursive func bind
+	incomplete = Named("nonrecursiveFunc")
+	in := []Type{TypeOf(true), TypeOf(0), TypeOf("")}
+	out := []Type{TypeOf(byte(0)), TypeOf(complex128(0))}
+	underlying = FuncOf(in, out, false)
+	complete = Bind(incomplete, underlying)
+	if complete == underlying {
+		t.Error("nonrecursiveFunc complete = underlying")
+	}
+	if complete.Name() != "nonrecursiveFunc" {
+		t.Errorf("bound func name = %s, want nonrecursiveFunc", complete.Name())
+	}
+	if complete.Kind() != Func {
+		t.Errorf("bound func kind = %s", complete.Kind())
+	}
+	if complete.NumIn() != len(in) {
+		t.Errorf("bound func num args = %d, want %d", complete.NumIn(), len(in))
+	}
+	if complete.NumOut() != len(out) {
+		t.Errorf("bound func num rets = %d, want %d", complete.NumOut(), len(out))
+	}
+	for i, expect := range in {
+		if complete.In(i) != expect {
+			t.Errorf("bound func arg %d type = %s, want %s",
+				i, complete.In(i), expect)
+		}
+	}
+	for i, expect := range out {
+		if complete.Out(i) != expect {
+			t.Errorf("bound func ret %d type = %s, want %d",
+				i, complete.Out(i), expect)
+		}
+	}
+	if complete.IsVariadic() {
+		t.Error("bound func is variadic, expected non-variadic")
+	}
+
+	// unsupported interface bind
+	incomplete = Named("unsupportedInterface")
+	underlying = TypeOf(new(interface{})).Elem()
+	shouldPanic("binding to interface type is not supported", func() {
+		Bind(incomplete, underlying)
+	})
+
+	// nonrecursive map bind
+	incomplete = Named("nonrecursiveMap")
+	underlying = MapOf(TypeOf(""), TypeOf(0))
+	complete = Bind(incomplete, underlying)
+	if complete == underlying {
+		t.Error("nonrecursiveMap complete = underlying")
+	}
+	if complete.Name() != "nonrecursiveMap" {
+		t.Errorf("bound map name = %s, want nonrecursiveMap", complete.Name())
+	}
+	if complete.Kind() != Map {
+		t.Errorf("bound map kind = %s", complete.Kind())
+	}
+	if complete.Key() != TypeOf("") {
+		t.Errorf("bound map key = %s, want %s", complete.Key(), TypeOf(""))
+	}
+	if complete.Elem() != TypeOf(0) {
+		t.Errorf("bound map elem = %s, want %s", complete.Elem(), TypeOf(0))
+	}
+
+	// nonrecursive pointer bind
+	incomplete = Named("nonrecursivePtr")
+	underlying = PtrTo(TypeOf(0))
+	complete = Bind(incomplete, underlying)
+	if complete == underlying {
+		t.Error("nonrecursivePtr complete = underlying")
+	}
+	if complete.Name() != "nonrecursivePtr" {
+		t.Errorf("bound pointer name = %s, want nonrecursivePtr", complete.Name())
+	}
+	if complete.Kind() != Ptr {
+		t.Errorf("bound pointer kind = %s", complete.Kind())
+	}
+	if complete.Elem() != TypeOf(0) {
+		t.Errorf("bound pointer elem = %s, want %s", complete.Elem(), TypeOf(0))
+	}
+
+	// nonrecursive slice bind
+	incomplete = Named("nonrecursiveSlice")
+	underlying = SliceOf(TypeOf(0))
+	complete = Bind(incomplete, underlying)
+	if complete == underlying {
+		t.Error("nonrecursiveSlice complete = underlying")
+	}
+	if complete.Name() != "nonrecursiveSlice" {
+		t.Errorf("bound slice name = %s, want nonrecursiveSlice", complete.Name())
+	}
+	if complete.Kind() != Slice {
+		t.Errorf("bound slice kind = %s", complete.Kind())
+	}
+	if complete.Elem() != TypeOf(0) {
+		t.Errorf("bound slice elem = %s, want %s", complete.Elem(), TypeOf(0))
+	}
+
+	// nonrecursive struct bind
+	incomplete = Named("nonrecursiveStruct")
+	fields := []StructField{
+		{Name: "Bool", Type: TypeOf(true)},
+		{Name: "Int", Type: TypeOf(0)},
+	}
+	underlying = StructOf(fields)
+	complete = Bind(incomplete, underlying)
+	if complete == underlying {
+		t.Error("nonrecursiveStruct complete = underlying")
+	}
+	if complete.Name() != "nonrecursiveStruct" {
+		t.Errorf("bound struct name = %s, want nonrecursiveStruct", complete.Name())
+	}
+	if complete.Kind() != Struct {
+		t.Errorf("bound struct kind = %s", complete.Kind())
+	}
+	if complete.NumField() != len(fields) {
+		t.Errorf("bound struct num fields = %d, want %d",
+			complete.NumField(), len(fields))
+	}
+	for i, field := range fields {
+		boundField := complete.Field(i)
+		if boundField.Name != field.Name {
+			t.Errorf("bound struct field %d name = %s, want %s",
+				i, boundField.Name, field.Name)
+		}
+		if boundField.Type != field.Type {
+			t.Errorf("bound struct field %d type = %s, want %s",
+				i, boundField.Type, field.Type)
+		}
+		boundField, ok := complete.FieldByName(field.Name)
+		if !ok {
+			t.Errorf("bound struct field %s missing", field.Name)
+		}
+		if boundField.Type != field.Type {
+			t.Errorf("bound struct field %s type = %s, want %s",
+				field.Name, boundField.Type, field.Type)
+		}
+	}
+	if _, ok := complete.FieldByName("Missing"); ok {
+		t.Error("bound struct has missing field")
+	}
+
+	// recursive array bind
+	incomplete = Named("recursiveArray")
+	underlying = ArrayOf(42, PtrTo(incomplete))
+	complete = Bind(incomplete, underlying)
+	if complete == underlying {
+		t.Error("recursiveArray complete = underlying")
+	}
+	if complete.Elem().Elem() != complete {
+		t.Errorf("recursive array elem = %s, want %s",
+			complete.Elem().Elem(), complete)
+	}
+
+	// recursive chan bind
+	incomplete = Named("recursiveChan")
+	underlying = ChanOf(SendDir, incomplete)
+	complete = Bind(incomplete, underlying)
+	if complete == underlying {
+		t.Error("recursiveChan complete = underlying")
+	}
+	if complete.Elem() != complete {
+		t.Errorf("recursive chan elem = %s, want %s", complete.Elem(), complete)
+	}
+
+	// oversized recursive chan bind
+	incomplete = Named("oversizedChan")
+	underlying = StructOf([]StructField{
+		{Name: "Chan", Type: ChanOf(RecvDir, incomplete)},
+		{Name: "Big", Type: ArrayOf(1<<16, PtrTo(incomplete))},
+	})
+	shouldPanic("element size too large", func() {
+		Bind(incomplete, underlying)
+	})
+
+	// recursive func bind
+	incomplete = Named("recursiveFunc")
+	underlying = FuncOf([]Type{incomplete}, []Type{incomplete}, false)
+	complete = Bind(incomplete, underlying)
+	if complete == underlying {
+		t.Error("recursiveFunc complete = underlying")
+	}
+	if complete.In(0) != complete {
+		t.Errorf("recursive func arg = %s, want %s", complete.In(0), complete)
+	}
+	if complete.Out(0) != complete {
+		t.Errorf("recursive func ret = %s, want %s", complete.Out(0), complete)
+	}
+
+	// recursive map bind
+	incomplete = Named("recursiveMap")
+	underlying = MapOf(PtrTo(incomplete), incomplete)
+	complete = Bind(incomplete, underlying)
+	if complete == underlying {
+		t.Error("recursiveMap complete = underlying")
+	}
+	if complete.Key().Elem() != complete {
+		t.Errorf("recursive map key = %s, want %s", complete.Key().Elem(), complete)
+	}
+	if complete.Elem() != complete {
+		t.Errorf("recursive map elem = %s, want %s", complete.Elem(), complete)
+	}
+
+	// recursive ptr bind
+	incomplete = Named("recursivePtr")
+	underlying = PtrTo(incomplete)
+	complete = Bind(incomplete, underlying)
+	if complete == underlying {
+		t.Error("recursivePtr complete = underlying")
+	}
+	if complete.Elem() != complete {
+		t.Errorf("recursive ptr elem = %s, want %s", complete.Elem(), complete)
+	}
+
+	// recursive slice bind
+	incomplete = Named("recursiveSlice")
+	underlying = SliceOf(incomplete)
+	complete = Bind(incomplete, underlying)
+	if complete == underlying {
+		t.Error("recursiveSlice complete = underlying")
+	}
+	if complete.Elem() != complete {
+		t.Errorf("recursive slice elem = %s, want %s", complete.Elem(), complete)
+	}
+
+	// recursive struct bind
+	incomplete = Named("recursiveStruct")
+	underlying = StructOf([]StructField{
+		{Name: "A", Type: ArrayOf(42, PtrTo(incomplete))},
+		{Name: "C", Type: ChanOf(BothDir, incomplete)},
+		{Name: "F", Type: FuncOf([]Type{incomplete, SliceOf(incomplete)}, []Type{},
+			true)},
+		{Name: "M", Type: MapOf(PtrTo(incomplete), incomplete)},
+		{Name: "P", Type: PtrTo(incomplete)},
+		{Name: "S", Type: SliceOf(incomplete)},
+	})
+	complete = Bind(incomplete, underlying)
+	if complete == underlying {
+		t.Error("recursiveStruct complete = underlying")
+	}
+	if complete.Field(0).Type.Elem().Elem() != complete ||
+		complete.Field(1).Type.Elem() != complete ||
+		complete.Field(2).Type.In(0) != complete ||
+		complete.Field(2).Type.In(1).Elem() != complete ||
+		complete.Field(3).Type.Key().Elem() != complete ||
+		complete.Field(3).Type.Elem() != complete ||
+		complete.Field(4).Type.Elem() != complete ||
+		complete.Field(5).Type.Elem() != complete {
+		t.Error("recursive struct incomplete type substitution error")
+	}
+
+	// invalid self-bind
+	incomplete = Named("invalidSelf")
+	shouldPanic("incomplete underlying type", func() {
+		Bind(incomplete, incomplete)
+	})
+
+	// invalid cross-bind
+	incomplete1 := Named("incomplete1")
+	incomplete2 := Named("incomplete2")
+	underlying = PtrTo(incomplete1)
+	shouldPanic("incomplete underlying type", func() {
+		Bind(incomplete2, underlying)
+	})
+
+	// instantiate a recursive type and play around with it
+	incomplete = Named("Recursive")
+	underlying = StructOf([]StructField{
+		{Name: "Bool", Type: TypeOf(true)},
+		{Name: "Int", Type: TypeOf(0)},
+		{Name: "Int8", Type: TypeOf(int8(0))},
+		{Name: "Int16", Type: TypeOf(int16(0))},
+		{Name: "Int32", Type: TypeOf(int32(0))},
+		{Name: "Int64", Type: TypeOf(int64(0))},
+		{Name: "Uint", Type: TypeOf(uint(0))},
+		{Name: "Uint8", Type: TypeOf(uint8(0))},
+		{Name: "Uint16", Type: TypeOf(uint16(0))},
+		{Name: "Uint32", Type: TypeOf(uint32(0))},
+		{Name: "Uint64", Type: TypeOf(uint64(0))},
+		{Name: "Uintptr", Type: TypeOf(uintptr(0))},
+		{Name: "Float32", Type: TypeOf(float32(0))},
+		{Name: "Float64", Type: TypeOf(float64(0))},
+		{Name: "Complex64", Type: TypeOf(complex64(0))},
+		{Name: "Complex128", Type: TypeOf(complex128(0))},
+		{Name: "Array", Type: ArrayOf(42, PtrTo(incomplete))},
+		{Name: "Chan", Type: ChanOf(BothDir, incomplete)},
+		{Name: "Func", Type: FuncOf([]Type{incomplete}, []Type{}, false)},
+		{Name: "Interface", Type: TypeOf(new(interface{})).Elem()},
+		{Name: "Map", Type: MapOf(PtrTo(incomplete), incomplete)},
+		{Name: "Ptr", Type: PtrTo(incomplete)},
+		{Name: "Slice", Type: SliceOf(incomplete)},
+		{Name: "String", Type: TypeOf("")},
+		{Name: "Struct", Type: StructOf([]StructField{
+			{Name: "Subfield", Type: PtrTo(incomplete)},
+		})},
+		{Name: "UnsafePointer", Type: TypeOf(unsafe.Pointer(uintptr(0)))},
+	})
+	complete = Bind(incomplete, underlying)
+	value := New(complete).Elem()
+	value.FieldByName("Bool").SetBool(true)
+	if !value.FieldByName("Bool").Bool() {
+		t.Error("set Bool field failed")
+	}
+	value.FieldByName("Int").SetInt(-132)
+	if value.FieldByName("Int").Int() != -132 {
+		t.Error("set Int field failed")
+	}
+	value.FieldByName("Int8").SetInt(-42)
+	if value.FieldByName("Int8").Int() != -42 {
+		t.Error("set Int8 field failed")
+	}
+	value.FieldByName("Int16").SetInt(-4242)
+	if value.FieldByName("Int16").Int() != -4242 {
+		t.Error("set Int16 field failed")
+	}
+	value.FieldByName("Int32").SetInt(-424242)
+	if value.FieldByName("Int32").Int() != -424242 {
+		t.Error("set Int32 field failed")
+	}
+	value.FieldByName("Int64").SetInt(-424242424242)
+	if value.FieldByName("Int64").Int() != -424242424242 {
+		t.Error("set Int64 field failed")
+	}
+	value.FieldByName("Uint").SetUint(132)
+	if value.FieldByName("Uint").Uint() != 132 {
+		t.Error("set Uint field failed")
+	}
+	value.FieldByName("Uint8").SetUint(42)
+	if value.FieldByName("Uint8").Uint() != 42 {
+		t.Error("set Uint8 field failed")
+	}
+	value.FieldByName("Uint16").SetUint(4242)
+	if value.FieldByName("Uint16").Uint() != 4242 {
+		t.Error("set Uint16 field failed")
+	}
+	value.FieldByName("Uint32").SetUint(424242)
+	if value.FieldByName("Uint32").Uint() != 424242 {
+		t.Error("set Uint32 field failed")
+	}
+	value.FieldByName("Uint64").SetUint(424242424242)
+	if value.FieldByName("Uint64").Uint() != 424242424242 {
+		t.Error("set Uint64 field failed")
+	}
+	value.FieldByName("Uintptr").SetUint(0xdeadbeef)
+	if value.FieldByName("Uintptr").Uint() != 0xdeadbeef {
+		t.Error("set Uintptr field failed")
+	}
+	value.FieldByName("Float32").SetFloat(3.141)
+	if float32(value.FieldByName("Float32").Float()) != float32(3.141) {
+		t.Error("set Float32 field failed")
+	}
+	value.FieldByName("Float64").SetFloat(2.71828)
+	if value.FieldByName("Float64").Float() != 2.71828 {
+		t.Error("set Float64 field failed")
+	}
+	value.FieldByName("Complex64").SetComplex(3.141 + 1.6i)
+	if complex64(value.FieldByName("Complex64").Complex()) !=
+		complex64(3.141+1.6i) {
+		t.Error("set Complex64 field failed")
+	}
+	value.FieldByName("Complex128").SetComplex(1.6 + 2.71828i)
+	if value.FieldByName("Complex128").Complex() != 1.6+2.71828i {
+		t.Error("set Complex128 field failed")
+	}
+	value.FieldByName("Array").Index(21).Set(value.Addr())
+	if value.FieldByName("Array").Index(21).Pointer() !=
+		value.Addr().Pointer() {
+		t.Errorf("Array[21] = %#x, want %#x",
+			value.FieldByName("Array").Index(21).Pointer(), value.Addr().Pointer())
+	}
+	ch := MakeChan(ChanOf(BothDir, complete), 1)
+	done := make(chan interface{}, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				done <- r
+			}
+			close(done)
+		}()
+		v, ok := ch.Recv()
+		if !ok {
+			panic("Chan closed unexpectedly")
+		}
+		if !DeepEqual(v.Interface(), value.Interface()) {
+			panic("Chan received value not equal to original")
+		}
+	}()
+	value.FieldByName("Chan").Set(ch)
+	if value.FieldByName("Chan").Pointer() != ch.Pointer() {
+		t.Errorf("Chan = %#x, want %#x",
+			value.FieldByName("Chan").Pointer(), ch.Pointer())
+	}
+	value.FieldByName("Chan").Send(value)
+	value.FieldByName("Chan").Close()
+	if r := <-done; r != nil {
+		panic(r)
+	}
+	f := MakeFunc(FuncOf(
+		[]Type{complete}, []Type{}, false,
+	), func(args []Value) (results []Value) {
+		if len(args) != 1 {
+			t.Errorf("Func bad arg len = %d, want 1", len(args))
+		}
+		if args[0].Type() != value.Type() {
+			t.Error("Func arg value type not equal to original")
+		}
+		return []Value{}
+	})
+	value.FieldByName("Func").Set(f)
+	if r := value.FieldByName("Func").Call([]Value{value}); len(r) != 0 {
+		t.Errorf("Func returned %d values, want 0", len(r))
+	}
+	value.FieldByName("Func").Set(Zero(f.Type())) // Reset so we can DeepEqual
+	value.FieldByName("Interface").Set(value)
+	if value.FieldByName("Interface").Elem().Type() != value.Type() {
+		t.Error("set Interface field failed")
+	}
+	value.FieldByName("Interface").Set(value.Addr())
+	if !DeepEqual(value.FieldByName("Interface").Elem().Elem().Interface(),
+		value.Interface()) {
+		t.Error("Interface value pointer content not equal to original")
+	}
+	value.FieldByName("Map").Set(MakeMap(MapOf(PtrTo(complete), complete)))
+	value.FieldByName("Map").SetMapIndex(value.Addr(), value)
+	if !DeepEqual(value.FieldByName("Map").MapIndex(value.Addr()).Interface(),
+		value.Interface()) {
+		t.Error("Map value not equal to original")
+	}
+	value.FieldByName("Ptr").Set(value.Addr())
+	if value.FieldByName("Ptr").Pointer() != value.Addr().Pointer() {
+		t.Errorf("Ptr = %#x, want %#x",
+			value.FieldByName("Ptr").Pointer(), value.Addr().Pointer())
+	}
+	value.FieldByName("Slice").Set(MakeSlice(SliceOf(complete), 1, 1))
+	value.FieldByName("Slice").Index(0).Set(value)
+	if !DeepEqual(value.FieldByName("Slice").Index(0).Interface(),
+		value.Interface()) {
+		t.Error("Slice[0] not equal to original")
+	}
+	value.FieldByName("String").SetString("test")
+	if value.FieldByName("String").String() != "test" {
+		t.Errorf("String = %s, want test", value.FieldByName("String").String())
+	}
+	value.FieldByName("Struct").Field(0).Set(value.Addr())
+	if value.FieldByName("Struct").FieldByName("Subfield").Pointer() !=
+		value.Addr().Pointer() {
+		t.Errorf("Struct.Subfield = %#x, want %#x",
+			value.FieldByName("Struct").FieldByName("Subfield").Pointer(),
+			value.Addr().Pointer())
+	}
+	value.FieldByName("UnsafePointer").
+		SetPointer(unsafe.Pointer(uintptr(0xdeadbeef)))
+	if value.FieldByName("UnsafePointer").Pointer() != 0xdeadbeef {
+		t.Errorf("UnsafePointer = %#x, want 0xdeadbeef",
+			value.FieldByName("UnsafePointer").Pointer())
+	}
+}
+
 func TestTypelinksSorted(t *testing.T) {
 	var last string
 	for i, n := range TypeLinks() {

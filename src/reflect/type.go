@@ -294,6 +294,10 @@ const (
 	// tflagRegularMemory means that equal and hash functions can treat
 	// this type as a single region of t.size bytes.
 	tflagRegularMemory tflag = 1 << 3
+
+	// tflagIncomplete means this type was created by Named and Bind has not
+	// been called on it yet.
+	tflagIncomplete tflag = 1 << 4
 )
 
 // rtype is the common implementation of most values.
@@ -1863,24 +1867,27 @@ func MapOf(key, elem Type) Type {
 	mt.hash = fnv1(etyp.hash, 'm', byte(ktyp.hash>>24), byte(ktyp.hash>>16), byte(ktyp.hash>>8), byte(ktyp.hash))
 	mt.key = ktyp
 	mt.elem = etyp
-	mt.bucket = bucketOf(ktyp, etyp)
-	mt.hasher = func(p unsafe.Pointer, seed uintptr) uintptr {
-		return typehash(ktyp, p, seed)
-	}
 	mt.flags = 0
+	if etyp.tflag&tflagIncomplete == 0 {
+		// For incomplete element types, these fields are set in Bind.
+		mt.bucket = bucketOf(ktyp, etyp)
+		mt.hasher = func(p unsafe.Pointer, seed uintptr) uintptr {
+			return typehash(ktyp, p, seed)
+		}
+		if etyp.size > maxValSize {
+			mt.valuesize = uint8(ptrSize)
+			mt.flags |= 2 // indirect value
+		} else {
+			mt.valuesize = uint8(etyp.size)
+		}
+		mt.bucketsize = uint16(mt.bucket.size)
+	}
 	if ktyp.size > maxKeySize {
 		mt.keysize = uint8(ptrSize)
 		mt.flags |= 1 // indirect key
 	} else {
 		mt.keysize = uint8(ktyp.size)
 	}
-	if etyp.size > maxValSize {
-		mt.valuesize = uint8(ptrSize)
-		mt.flags |= 2 // indirect value
-	} else {
-		mt.valuesize = uint8(etyp.size)
-	}
-	mt.bucketsize = uint16(mt.bucket.size)
 	if isReflexive(ktyp) {
 		mt.flags |= 4
 	}
@@ -2351,6 +2358,23 @@ func isIdentifier(id string) bool {
 // According to the language spec, a field name should be an identifier.
 func isValidFieldName(fieldName string) bool {
 	return isIdentifier(fieldName)
+}
+
+// isExportableTypeName checks if a string is an exportable type name or not.
+// isExportableTypeName panics if the string is not a valid type name at all.
+//
+// According to the language spec, a type name should be an identifier.
+// According to the language spec, a type name is exported if the first
+// character of the identifier's name is a Unicode upper case letter and
+// the declaration is in the package block. For the purposes of the reflect
+// package, this last requirement is ignored.
+func isExportableTypeName(typeName string) bool {
+	if !isIdentifier(typeName) {
+		panic("reflect: invalid type name")
+	}
+
+	r, _ := utf8.DecodeRuneInString(typeName)
+	return unicode.IsUpper(r)
 }
 
 // StructOf returns the struct type containing fields.
@@ -2826,6 +2850,9 @@ const maxPtrmaskBytes = 2048
 // ArrayOf panics.
 func ArrayOf(count int, elem Type) Type {
 	typ := elem.(*rtype)
+	if typ.tflag&tflagIncomplete != 0 {
+		panic("reflect.ArrayOf: incomplete element type")
+	}
 
 	// Look in cache.
 	ckey := cacheKey{Array, typ, nil, uintptr(count)}
@@ -2950,6 +2977,198 @@ func ArrayOf(count int, elem Type) Type {
 
 	ti, _ := lookupCache.LoadOrStore(ckey, &array.rtype)
 	return ti.(Type)
+}
+
+// Named creates a new incomplete type with the specified valid name.
+// An invalid name causes Named to panic.
+//
+// The resulting type can be used as an argument to ArrayOf, ChanOf, FuncOf,
+// MapOf, PtrTo, SliceOf, and StructOf whenever the analogous compile-time type
+// specification in a type declaration would result in a valid recursive type.
+// Invalid combinations cause Named to panic. E. g., passing an incomplete type
+// to ArrayOf is invalid, but passing an incomplete type to PtrTo and then that
+// type to ArrayOf is valid.
+//
+// Any such type, including the incomplete named type itself, may not be used
+// in any other context until it has been completed with Bind. A future version
+// may relax this requirement (e. g., allow use in MakeFunc before calling
+// Bind).
+func Named(name string) Type {
+	return &rtype{
+		tflag: tflagNamed | tflagIncomplete,
+		hash:  fnv1(0, []byte(name)...),
+		str:   resolveReflectName(newName(name, "", isExportableTypeName(name))),
+	}
+}
+
+// Bind binds the specified incomplete named type to underlying akin to a valid
+// type declaration and returns a completed version of named. The underlying
+// type may indirectly reference the named type, but no
+// other incomplete type created with Named. A Bind which represents an illegal
+// type declaration panics.
+func Bind(named Type, underlying Type) Type {
+	stub := named.(*rtype)
+	typ := underlying.(*rtype)
+	if typ.tflag&tflagIncomplete != 0 {
+		panic("reflect.Bind: incomplete underlying type")
+	}
+
+	var complete *rtype
+	switch typ.Kind() {
+	case Bool, Int, Int8, Int16, Int32, Int64, Uint, Uint8, Uint16, Uint32,
+		Uint64, Uintptr, Float32, Float64, Complex64, Complex128, String,
+		UnsafePointer:
+		t := *typ
+		complete = &t
+	case Array:
+		t := *(*arrayType)(unsafe.Pointer(typ))
+		complete = (*rtype)(unsafe.Pointer(&t))
+	case Chan:
+		t := *(*chanType)(unsafe.Pointer(typ))
+		complete = (*rtype)(unsafe.Pointer(&t))
+	case Func:
+		// Model complete as a funcType followed directly in memory by an array of
+		// rtype pointers for the arg/return types.
+		tp := (*funcType)(unsafe.Pointer(typ))
+		in := tp.in()
+		out := tp.out()
+		n := len(in) + len(out)
+		ft := New(StructOf([]StructField{
+			{Name: "B", Type: TypeOf(funcType{})},
+			{Name: "A", Type: ArrayOf(n, TypeOf((*rtype)(nil)))},
+		}))
+		base := (*funcType)(unsafe.Pointer(ft.Elem().Field(0).UnsafeAddr()))
+		*base = *tp
+		copy(ft.Elem().Field(1).Slice(0, len(in)).Interface().([]*rtype), in)
+		copy(ft.Elem().Field(1).Slice(len(in), n).Interface().([]*rtype), out)
+		complete = (*rtype)(unsafe.Pointer(base))
+	case Interface:
+		// There is no InterfaceOf yet, see #4146.
+		panic("reflect.Bind: binding to interface type is not supported")
+	case Map:
+		t := *(*mapType)(unsafe.Pointer(typ))
+		complete = (*rtype)(unsafe.Pointer(&t))
+	case Ptr:
+		t := *(*ptrType)(unsafe.Pointer(typ))
+		complete = (*rtype)(unsafe.Pointer(&t))
+	case Slice:
+		t := *(*sliceType)(unsafe.Pointer(typ))
+		complete = (*rtype)(unsafe.Pointer(&t))
+	case Struct:
+		t := *(*structType)(unsafe.Pointer(typ))
+		complete = (*rtype)(unsafe.Pointer(&t))
+	}
+	complete.hash = stub.hash
+	complete.tflag &^= tflagExtraStar | tflagUncommon
+	complete.tflag |= tflagNamed
+	complete.str = stub.str
+
+	updateTypes(make(map[*rtype]struct{}), stub, complete, complete)
+
+	return complete
+}
+
+// updateTypes replaces each occurrence of find in typ with repl. The seen map
+// is used to avoid infinite recursion.
+func updateTypes(seen map[*rtype]struct{}, find, repl, typ *rtype) {
+	if _, ok := seen[typ]; ok {
+		return
+	}
+	seen[typ] = struct{}{}
+	if typ.tflag&tflagIncomplete != 0 {
+		panic("reflect.Bind: incomplete underlying type")
+	}
+
+	switch typ.Kind() {
+	case Bool, Int, Int8, Int16, Int32, Int64, Uint, Uint8, Uint16, Uint32,
+		Uint64, Uintptr, Float32, Float64, Complex64, Complex128, Interface, String,
+		UnsafePointer:
+	case Array:
+		tp := (*arrayType)(unsafe.Pointer(typ))
+		updateTypes(seen, find, repl, tp.elem)
+	case Chan:
+		tp := (*chanType)(unsafe.Pointer(typ))
+		if tp.elem == find {
+			// Size restriction, see ChanOf.
+			if repl.size >= 1<<16 {
+				panic("reflect.Bind: channel element size too large")
+			}
+			lookupCache.Delete(cacheKey{Chan, tp.elem, nil, tp.dir})
+			tp.elem = repl
+			lookupCache.Store(cacheKey{Chan, tp.elem, nil, tp.dir}, &tp.rtype)
+		} else {
+			updateTypes(seen, find, repl, tp.elem)
+		}
+	case Func:
+		tp := (*funcType)(unsafe.Pointer(typ))
+		in := tp.in()
+		out := tp.out()
+		for i, t := range in {
+			if t == find {
+				in[i] = repl
+			} else {
+				updateTypes(seen, find, repl, t)
+			}
+		}
+		for i, t := range out {
+			if t == find {
+				out[i] = repl
+			} else {
+				updateTypes(seen, find, repl, t)
+			}
+		}
+		// No need to update function cache as hash should remain the same
+	case Map:
+		tp := (*mapType)(unsafe.Pointer(typ))
+		updateTypes(seen, find, repl, tp.key)
+		tp.hasher = func(p unsafe.Pointer, seed uintptr) uintptr {
+			return typehash(tp.key, p, seed)
+		}
+		if tp.elem == find {
+			lookupCache.Delete(cacheKey{Map, tp.key, tp.elem, 0})
+			tp.elem = repl
+			// Set some delayed fields, see MapOf
+			tp.bucket = bucketOf(tp.key, tp.elem)
+			if tp.elem.size > maxValSize {
+				tp.valuesize = uint8(ptrSize)
+				tp.flags |= 2
+			} else {
+				tp.valuesize = uint8(tp.elem.size)
+			}
+			tp.bucketsize = uint16(tp.bucket.size)
+			lookupCache.Store(cacheKey{Map, tp.key, tp.elem, 0}, &tp.rtype)
+		} else {
+			updateTypes(seen, find, repl, tp.elem)
+		}
+	case Ptr:
+		tp := (*ptrType)(unsafe.Pointer(typ))
+		if tp.elem == find {
+			ptrMap.Delete(tp.elem)
+			tp.elem = repl
+			ptrMap.Store(tp.elem, tp)
+		} else {
+			updateTypes(seen, find, repl, tp.elem)
+		}
+	case Slice:
+		tp := (*sliceType)(unsafe.Pointer(typ))
+		if tp.elem == find {
+			lookupCache.Delete(cacheKey{Slice, tp.elem, nil, 0})
+			tp.elem = repl
+			lookupCache.Store(cacheKey{Slice, tp.elem, nil, 0}, &tp.rtype)
+		} else {
+			updateTypes(seen, find, repl, tp.elem)
+		}
+	case Struct:
+		tp := (*structType)(unsafe.Pointer(typ))
+		for i, f := range tp.fields {
+			if f.typ == find {
+				tp.fields[i].typ = repl
+			} else {
+				updateTypes(seen, find, repl, f.typ)
+			}
+		}
+		// No need to update struct cache as hash should remain the same
+	}
 }
 
 func appendVarint(x []byte, v uintptr) []byte {

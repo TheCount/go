@@ -24,8 +24,9 @@ import (
 //	reflect/type.go
 //	runtime/type.go
 const (
-	tflagUncommon  = 1 << 0
-	tflagExtraStar = 1 << 1
+	tflagUncommon   = 1 << 0
+	tflagExtraStar  = 1 << 1
+	tflagIncomplete = 1 << 4
 )
 
 func decodeInuxi(arch *sys.Arch, p []byte, sz int) uint64 {

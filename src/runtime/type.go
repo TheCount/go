@@ -22,6 +22,7 @@ const (
 	tflagExtraStar     tflag = 1 << 1
 	tflagNamed         tflag = 1 << 2
 	tflagRegularMemory tflag = 1 << 3 // equal and hash can treat values of this type as a single region of t.size bytes
+	tflagIncomplete    tflag = 1 << 4
 )
 
 // Needs to be in sync with ../cmd/link/internal/ld/decodesym.go:/^func.commonsize,
