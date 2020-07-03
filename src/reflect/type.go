@@ -2370,6 +2370,16 @@ func StructOf(fields []StructField) Type {
 		hasGCProg = false // records whether a struct-field type has a GCProg
 	)
 
+	// delayedMethod holds data for creating a method once the size of the
+	// created struct type is known.
+	type delayedMethod struct {
+		methodType   *rtype
+		imethodIndex int
+		fieldIndex   int
+		methodIndex  int
+	}
+	var delayedMethods []delayedMethod
+
 	lastzero := uintptr(0)
 	repr = append(repr, "struct {"...)
 	pkgpath := ""
@@ -2419,55 +2429,15 @@ func StructOf(fields []StructField) Type {
 						panic("reflect: embedded interface with unexported method(s) not implemented")
 					}
 
-					var (
-						mtyp    = ift.typeOff(m.typ)
-						ifield  = i
-						imethod = im
-						ifn     Value
-						tfn     Value
-					)
-
-					if ft.kind&kindDirectIface != 0 {
-						tfn = MakeFunc(mtyp, func(in []Value) []Value {
-							var args []Value
-							var recv = in[0]
-							if len(in) > 1 {
-								args = in[1:]
-							}
-							return recv.Field(ifield).Method(imethod).Call(args)
-						})
-						ifn = MakeFunc(mtyp, func(in []Value) []Value {
-							var args []Value
-							var recv = in[0]
-							if len(in) > 1 {
-								args = in[1:]
-							}
-							return recv.Field(ifield).Method(imethod).Call(args)
-						})
-					} else {
-						tfn = MakeFunc(mtyp, func(in []Value) []Value {
-							var args []Value
-							var recv = in[0]
-							if len(in) > 1 {
-								args = in[1:]
-							}
-							return recv.Field(ifield).Method(imethod).Call(args)
-						})
-						ifn = MakeFunc(mtyp, func(in []Value) []Value {
-							var args []Value
-							var recv = Indirect(in[0])
-							if len(in) > 1 {
-								args = in[1:]
-							}
-							return recv.Field(ifield).Method(imethod).Call(args)
-						})
-					}
-
+					// add empty slot, delay fill
 					methods = append(methods, method{
 						name: resolveReflectName(ift.nameOff(m.name)),
-						mtyp: resolveReflectType(mtyp),
-						ifn:  resolveReflectText(unsafe.Pointer(&ifn)),
-						tfn:  resolveReflectText(unsafe.Pointer(&tfn)),
+					})
+					delayedMethods = append(delayedMethods, delayedMethod{
+						methodType:   ift.typeOff(m.typ),
+						imethodIndex: im,
+						fieldIndex:   i,
+						methodIndex:  len(methods) - 1,
 					})
 				}
 			case Ptr:
@@ -2581,6 +2551,7 @@ func StructOf(fields []StructField) Type {
 
 	var typ *structType
 	var ut *uncommonType
+	var firstMethod *method
 
 	if len(methods) == 0 {
 		t := new(structTypeUncommon)
@@ -2600,6 +2571,7 @@ func StructOf(fields []StructField) Type {
 
 		typ = (*structType)(unsafe.Pointer(tt.Elem().Field(0).UnsafeAddr()))
 		ut = (*uncommonType)(unsafe.Pointer(tt.Elem().Field(1).UnsafeAddr()))
+		firstMethod = (*method)(unsafe.Pointer(tt.Elem().Field(2).UnsafeAddr()))
 
 		copy(tt.Elem().Field(2).Slice(0, len(methods)).Interface().([]method), methods)
 	}
@@ -2748,6 +2720,53 @@ func StructOf(fields []StructField) Type {
 		typ.kind |= kindDirectIface
 	default:
 		typ.kind &^= kindDirectIface
+	}
+
+	// Fill in delayed methods
+	if firstMethod != nil {
+		for _, dm := range delayedMethods {
+			var (
+				m = &((*[1 << 30]method)(
+					unsafe.Pointer(firstMethod))[dm.methodIndex])
+				fieldIndex   = dm.fieldIndex
+				imethodIndex = dm.imethodIndex
+			)
+			m.mtyp = resolveReflectType(dm.methodType)
+			inTypes := make([]Type, dm.methodType.NumIn()+1)
+			inTypes[0] = &typ.rtype
+			for i := 0; i < dm.methodType.NumIn(); i++ {
+				inTypes[i+1] = dm.methodType.In(i)
+			}
+			outTypes := make([]Type, dm.methodType.NumOut())
+			for i := 0; i < dm.methodType.NumOut(); i++ {
+				outTypes[i] = dm.methodType.Out(i)
+			}
+			tfnType := FuncOf(inTypes, outTypes, dm.methodType.IsVariadic())
+			tfn := MakeFunc(tfnType, func(in []Value) []Value {
+				return in[0].Field(fieldIndex).Method(imethodIndex).Call(in[1:])
+			})
+			m.tfn = resolveReflectText(allocMethodSlot(tfn.ptr))
+			if typ.kind&kindDirectIface != 0 {
+				// FIXME: can this even happen?
+				m.ifn = m.tfn
+			} else {
+				inTypes[0] = TypeOf(tfn.ptr)
+				ifnType := FuncOf(inTypes, outTypes, dm.methodType.IsVariadic())
+				ifn := MakeFunc(ifnType, func(in []Value) []Value {
+					recv := in[0]
+					recv.typ = &typ.rtype
+					if recv.flag&flagIndir != 0 {
+						recv.ptr = unsafe.Pointer(*(*uintptr)(recv.ptr))
+					} else {
+						recv.flag |= flagIndir
+					}
+					recv.flag &^= flagKindMask
+					recv.flag |= flag(typ.rtype.kind & kindMask)
+					return recv.Field(fieldIndex).Method(imethodIndex).Call(in[1:])
+				})
+				m.ifn = resolveReflectText(allocMethodSlot(ifn.ptr))
+			}
+		}
 	}
 
 	return addToCache(&typ.rtype)

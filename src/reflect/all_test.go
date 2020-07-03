@@ -5469,6 +5469,174 @@ func TestStructOfDifferentPkgPath(t *testing.T) {
 	})
 }
 
+type EmbeddedStructZero struct{}
+
+func (EmbeddedStructZero) MValue() int {
+	return 1234
+}
+
+func (*EmbeddedStructZero) MPtr() int {
+	return 5678
+}
+
+type EmbeddedStructSmall struct {
+	Field int
+}
+
+func (s EmbeddedStructSmall) MValue() int {
+	return s.Field + 1234
+}
+
+func (s *EmbeddedStructSmall) MPtr() int {
+	return s.Field + 5678
+}
+
+type EmbeddedStructLarge struct {
+	Field [33]int
+}
+
+func (s EmbeddedStructLarge) MValue() int {
+	return s.Field[17] + 1234
+}
+
+func (s *EmbeddedStructLarge) MPtr() int {
+	return s.Field[18] + 5678
+}
+
+type EmbeddedInterfaceValue interface {
+	MValue() int
+}
+
+type EmbeddedInterfacePtr interface {
+	MValue() int
+	MPtr() int
+}
+
+// Test methods from embedded fields. See #38783.
+func TestStructOfMethods(t *testing.T) {
+	sZeroValue := New(StructOf([]StructField{
+		StructField{
+			Name:      "EmbeddedStructZero",
+			Type:      TypeOf(EmbeddedStructZero{}),
+			Anonymous: true,
+		},
+	})).Elem()
+	rets := sZeroValue.MethodByName("MValue").Call([]Value{})
+	if rets[0].Int() != 1234 {
+		t.Errorf("embedded zero struct value call: have %d, want 1234",
+			rets[0].Int())
+	}
+	sSmallValue := New(StructOf([]StructField{
+		StructField{
+			Name:      "EmbeddedStructSmall",
+			Type:      TypeOf(EmbeddedStructSmall{}),
+			Anonymous: true,
+		},
+	})).Elem()
+	sSmallValue.Field(0).Field(0).SetInt(42)
+	rets = sSmallValue.MethodByName("MValue").Call([]Value{})
+	if rets[0].Int() != 1234+42 {
+		t.Errorf("embedded small struct value call: have %d, want %d",
+			rets[0].Int(), 1234+42)
+	}
+	sLargeValue := New(StructOf([]StructField{
+		StructField{
+			Name:      "EmbeddedStructLarge",
+			Type:      TypeOf(EmbeddedStructLarge{}),
+			Anonymous: true,
+		},
+	})).Elem()
+	sLargeValue.Field(0).Field(0).Index(17).SetInt(42)
+	sLargeValue.Field(0).Field(0).Index(18).SetInt(35)
+	rets = sLargeValue.MethodByName("MValue").Call([]Value{})
+	if rets[0].Int() != 1234+42 {
+		t.Errorf("embedded large struct value call: have %d, want %d",
+			rets[0].Int(), 1234+42)
+	}
+	var ifaceValue EmbeddedInterfaceValue
+	sIfaceValue := New(StructOf([]StructField{
+		StructField{
+			Name:      "EmbeddedInterfaceValue",
+			Type:      TypeOf(&ifaceValue).Elem(),
+			Anonymous: true,
+		},
+	})).Elem()
+	sIfaceValue.Field(0).Set(ValueOf(EmbeddedStructZero{}))
+	rets = sIfaceValue.MethodByName("MValue").Call([]Value{})
+	if rets[0].Int() != 1234 {
+		t.Errorf("embedded zero struct interface value call: have %d, want 1234",
+			rets[0].Int())
+	}
+	sIfaceValue.Field(0).Set(ValueOf(EmbeddedStructSmall{42}))
+	rets = sIfaceValue.MethodByName("MValue").Call([]Value{})
+	if rets[0].Int() != 1234+42 {
+		t.Errorf("embedded small struct interface value call: have %d, want %d",
+			rets[0].Int(), 1234+42)
+	}
+	large := EmbeddedStructLarge{}
+	large.Field[17] = 42
+	large.Field[18] = 35
+	sIfaceValue.Field(0).Set(ValueOf(large))
+	rets = sIfaceValue.MethodByName("MValue").Call([]Value{})
+	if rets[0].Int() != 1234+42 {
+		t.Errorf("embedded large struct interface value call: have %d, want %d",
+			rets[0].Int(), 1234+42)
+	}
+	var ifacePtr EmbeddedInterfacePtr
+	sIfacePtr := New(StructOf([]StructField{
+		StructField{
+			Name:      "EmbeddedInterfacePtr",
+			Type:      TypeOf(&ifacePtr).Elem(),
+			Anonymous: true,
+		},
+	})).Elem()
+	sIfacePtr.Field(0).Set(ValueOf(&EmbeddedStructZero{}))
+	rets = sIfacePtr.MethodByName("MValue").Call([]Value{})
+	if rets[0].Int() != 1234 {
+		t.Errorf(
+			"embedded zero struct ptr interface value call: have %d, want 1234",
+			rets[0].Int(),
+		)
+	}
+	rets = sIfacePtr.MethodByName("MPtr").Call([]Value{})
+	if rets[0].Int() != 5678 {
+		t.Errorf(
+			"embedded zero struct ptr interface ptr call: have %d, want 5678",
+			rets[0].Int(),
+		)
+	}
+	sIfacePtr.Field(0).Set(ValueOf(&EmbeddedStructSmall{42}))
+	rets = sIfacePtr.MethodByName("MValue").Call([]Value{})
+	if rets[0].Int() != 1234+42 {
+		t.Errorf(
+			"embedded small struct ptr interface value call: have %d, want %d",
+			rets[0].Int(), 1234+42,
+		)
+	}
+	rets = sIfacePtr.MethodByName("MPtr").Call([]Value{})
+	if rets[0].Int() != 5678+42 {
+		t.Errorf(
+			"embedded small struct ptr interface ptr call: have %d, want %d",
+			rets[0].Int(), 5678+42,
+		)
+	}
+	sIfacePtr.Field(0).Set(ValueOf(&large))
+	rets = sIfacePtr.MethodByName("MValue").Call([]Value{})
+	if rets[0].Int() != 1234+42 {
+		t.Errorf(
+			"embedded large struct ptr interface value call: have %d, want %d",
+			rets[0].Int(), 1234+42,
+		)
+	}
+	rets = sIfacePtr.MethodByName("MPtr").Call([]Value{})
+	if rets[0].Int() != 5678+35 {
+		t.Errorf(
+			"embedded large struct ptr interface ptr call: have %d, want %d",
+			rets[0].Int(), 5678+35,
+		)
+	}
+}
+
 func TestChanOf(t *testing.T) {
 	// check construction and use of type not in binary
 	type T string

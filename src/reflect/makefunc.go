@@ -7,6 +7,9 @@
 package reflect
 
 import (
+	"strconv"
+	"sync"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -136,3 +139,82 @@ func makeMethodValue(op string, v Value) Value {
 // where ctxt is the context register and frame is a pointer to the first
 // word in the passed-in argument frame.
 func methodValueCall()
+
+// methodMap maps runtime method keys to their implementing closure.
+// The keys are the code locations used to call the runtime generated method,
+// plus some architecture dependent but otherwise constant offset.
+// Each method has a unique entry point. The values are function pointers to
+// closures implementing the method. Cf. https://golang.org/s/go11func: the
+// pointer value points to the closure context, which starts with the actual
+// code pointer.
+var methodMap sync.Map // map[uintptr]unsafe.Pointer
+
+// dispatchToMethod is a pseudo-prototype reserving a code region for method
+// calls. It is never called directly; rather calls go somewhere in the middle
+// of that region. See ·dispatchToMethod in asm_*.s for details.
+func dispatchToMethod()
+
+// dispatchLabel must never be called from go code. It's a call target in
+// assembly used in the implementation of dispatchToMethod.
+func dispatchLabel()
+
+// dispatchToMethodAddr is the address of the actual code of dispatchToMethod.
+var dispatchToMethodAddr uintptr = func() uintptr {
+	// See https://golang.org/s/go11func.
+	dummy := dispatchToMethod
+	return **(**uintptr)(unsafe.Pointer(&dummy))
+}()
+
+// currentMethodKey is the most recent method key used for creating a method
+// at runtime. Initially, it's the actual code address of dispatchToMethod.
+var currentMethodKey = dispatchToMethodAddr
+
+const (
+	// dispatchStep is the number of bytes we should call deeper into
+	// dispatchToMethod with each generated method.
+	dispatchStep = 5 // FIXME: AMD64 specific
+
+	// dispatchLimit is the upper limit for currentMethodKey. Once this limit
+	// is reached, we need to switch to a different page.
+	dispatchLimit = dispatchStep * 812 // FIXME: AMD64 specific
+)
+
+// methodSlotsExhausted is a drop-in for when there are no more method slots.
+// It will cause the method to panic when called. This late-failure behaviour
+// makes it possible to successfully call StructOf even if no more slots for
+// wrapper methods are available. The resulting struct type can then be used
+// normally as long as none of its methods are called.
+func methodSlotsExhausted() {
+	panic("reflect: method slots were exhausted when creating this method")
+}
+
+// allocMethodSlot returns a direct code pointer which can be used as target
+// in a method call which calls the specified closure. The given closure should
+// be a pointer to a block of memory the first word of which is a pointer to
+// the actual closure code. It is up to the caller to ensure that the
+// stack layout on method entry (recv, arg1, …, argN, ret1, …, retN) matches
+// the expectations of the closure, i. e., the closure should be as if callable
+// as func(recv, arg1, …, argN) and returning (ret1, …, retN) with the correct
+// types.
+//
+// If there are no more method slots available, allocMethodSlot returns a
+// pointer to the actual code of methodsSlotsExhausted instead.
+func allocMethodSlot(closure unsafe.Pointer) unsafe.Pointer {
+	newKey := atomic.AddUintptr(&currentMethodKey, dispatchStep)
+	if newKey > dispatchToMethodAddr+dispatchLimit {
+		atomic.AddUintptr(&currentMethodKey, ^uintptr(dispatchStep)+1)
+		dummy := methodSlotsExhausted
+		return unsafe.Pointer(**(**uintptr)(unsafe.Pointer(&dummy)))
+	}
+	methodMap.Store(newKey, closure)
+	return unsafe.Pointer(newKey - dispatchStep)
+}
+
+// getMethodImpl returns the pointer to the closure for the specified key.
+func getMethodImpl(key uintptr) unsafe.Pointer {
+	if x, ok := methodMap.Load(key); !ok {
+		panic("reflect: method " + strconv.Itoa(int(key)) + " not found")
+	} else {
+		return x.(unsafe.Pointer)
+	}
+}
